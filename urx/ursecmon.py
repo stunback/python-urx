@@ -202,7 +202,7 @@ class ParserUtils(object):
         returns None if none found
         """
         counter = 0
-        limit = 10
+        limit = 100
         while True:
             if len(data) >= 5:
                 psize, ptype = self.get_header(data)
@@ -309,7 +309,7 @@ class SecondaryMonitor(Thread):
             if self._parser.version >= (3, 0):
                 rmode = 7
 
-            if self._dict["RobotModeData"]["robotMode"] == rmode \
+            if self._dict["RobotModeData"]["robotMode"] == 7 \
                     and self._dict["RobotModeData"]["isRealRobotEnabled"] is True \
                     and self._dict["RobotModeData"]["isEmergencyStopped"] is False \
                     and self._dict["RobotModeData"]["isSecurityStopped"] is False \
