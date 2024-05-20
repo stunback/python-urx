@@ -13,7 +13,7 @@ if __name__ == "__main__":
         l = 0.05
         v = 0.05
         a = 0.3
-        pose = rob.getl()
+        pose = rob.getl_pose()
         print("robot tcp is at: ", pose)
         print("absolute move in base coordinate ")
         pose[2] += l

@@ -3,3 +3,5 @@ build
 .idea/
 .history/
 *.pyc
+urx.egg-info
+dist

@@ -10,25 +10,25 @@ if __name__ == "__main__":
         v = 0.07
         a = 0.1
         r = 0.05
-        pose = rob.getl()
+        pose = rob.getl_pose()
         pose[2] += l
         rob.movep(pose, acc=a, vel=v, radius=r, wait=False)
         while True:
-            p = rob.getl(wait=True)
+            p = rob.getl_pose(wait=True)
             if p[2] > pose[2] - 0.05:
                 break
 
         pose[1] += l 
         rob.movep(pose, acc=a, vel=v, radius=r, wait=False)
         while True:
-            p = rob.getl(wait=True)
+            p = rob.getl_pose(wait=True)
             if p[1] > pose[1] - 0.05:
                 break
 
         pose[2] -= l
         rob.movep(pose, acc=a, vel=v, radius=r, wait=False)
         while True:
-            p = rob.getl(wait=True)
+            p = rob.getl_pose(wait=True)
             if p[2] < pose[2] + 0.05:
                 break
 

@@ -28,10 +28,10 @@ class URRobot(object):
 
     """
     Python interface to socket interface of UR robot.
-    programs are send to port 3002
+    programs are send to port 30002 or 30003
     data is read from secondary interface(10Hz?) and real-time interface(125Hz) (called Matlab interface in documentation)
     Since parsing the RT interface uses som CPU, and does not support all robots versions, it is disabled by default
-    The RT interfaces is only used for the get_force related methods
+    The RT interfaces is only used for the get_force related methods (except for speedx_rt)
     Rmq: A program sent to the robot i executed immendiatly and any running program is stopped
     """
 
@@ -90,6 +90,15 @@ class URRobot(object):
         """
         self.logger.info("Sending program: " + prog)
         self.secmon.send_program(prog)
+    
+    def send_rt_program(self, prog):
+        """
+        send a complete program using urscript to the robot using rtmon
+        the program is executed immediatly and any runnning
+        program is interrupted
+        """
+        self.logger.info("Sending rt program: " + prog)
+        self.rtmon.send_program(prog)
 
     def get_tcp_force(self, wait=True):
         """
@@ -280,7 +289,7 @@ class URRobot(object):
                     return
                 count += 1
                 if count > timeout * 10:
-                    raise RobotException("Goal not reached but no program has been running for {} seconds. dist is {}, threshold is {}, target is {}, current pose is {}".format(timeout, dist, threshold, target, URRobot.getl(self)))
+                    raise RobotException("Goal not reached but no program has been running for {} seconds. dist is {}, threshold is {}, target is {}, current pose is {}".format(timeout, dist, threshold, target, URRobot.getl_pose(self)))
             else:
                 count = 0
 
@@ -292,7 +301,7 @@ class URRobot(object):
 
     def _get_lin_dist(self, target):
         # FIXME: we have an issue here, it seems sometimes the axis angle received from robot
-        pose = URRobot.getl(self, wait=True)
+        pose = URRobot.getl_pose(self, wait=True)
         dist = 0
         for i in range(3):
             dist += (target[i] - pose[i]) ** 2
@@ -301,13 +310,65 @@ class URRobot(object):
         return dist ** 0.5
 
     def _get_joints_dist(self, target):
-        joints = self.getj(wait=True)
+        joints = self.getj_position(wait=True)
         dist = 0
         for i in range(6):
             dist += (target[i] - joints[i]) ** 2
         return dist ** 0.5
+    
+    def _wait_for_speed(self, speed, threshold=None, joints=False):
+        """
+        wait for a speed up to complete. Unfortunately there is no good way to know when a move has finished
+        so for every received data from robot we compute a dist equivalent and when it is lower than
+        'threshold' we return.
+        """
+        self.logger.debug("Waiting for speed completion using threshold %s and speed %s", threshold, speed)
+        start_speed = self._get_speed(joints)
+        if threshold is None:
+            threshold = start_speed * 0.8
+            if threshold < 0.001:
+                threshold = 0.001
+            self.logger.debug("No threshold set, setting it to %s", threshold)
+        while True:
+            if not self.rtmon.getRobotMode() == 7:
+                raise RobotException("Robot stopped")
+            dist = self._get_speed_dist(speed, joints)
+            self.logger.debug("distance to speed is: %s, target dist is %s", dist, threshold)
+            if not self.rtmon.getProgramState() == 1:
+                if dist < threshold:
+                    self.logger.debug("we are threshold(%s) close to speed", threshold)
+                    return
 
-    def getj(self, wait=False):
+    def _get_speed_dist(self, target, joints=False):
+        if joints:
+            return self._get_joints_speed_dist(target)
+        else:
+            return self._get_lin_speed_dist(target)
+    
+    def _get_lin_speed_dist(self, target):
+        speed = self.getl_speed(wait=True)
+        dist = 0
+        for i in range(3):
+            dist += (target[i] - speed[i]) ** 2
+        for i in range(3, 6):
+            dist += ((target[i] - speed[i]) / 5) ** 2
+        return dist ** 0.5
+    
+    def _get_joints_speed_dist(self, target):
+        joints = self.getj_speed(wait=True)
+        dist = 0
+        for i in range(6):
+            dist += (target[i] - joints[i]) ** 2
+        return dist ** 0.5
+    
+    def getj_speed(self, wait=False):
+        """
+        get joints speed
+        """
+        jvs = self.rtmon.getJointVelocityActual(wait)
+        return [jvs[0], jvs[1], jvs[2], jvs[3], jvs[4], jvs[5]]
+
+    def getj_position(self, wait=False):
         """
         get joints position
         """
@@ -321,18 +382,28 @@ class URRobot(object):
         prog = "{}([{},{},{},{},{},{}], {}, {})".format(command, *vels)
         self.send_program(prog)
 
+    def speedx_rt(self, command, velocities, acc, min_time):
+        vels = [round(i, self.max_float_length) for i in velocities]
+        vels.append(acc)
+        if min_time is not None:
+            vels.append(min_time)
+            prog = "{}([{},{},{},{},{},{}], {}, {})".format(command, *vels)
+        else:
+            prog = "{}([{},{},{},{},{},{}], {})".format(command, *vels)
+        self.send_rt_program(prog)
+
     def movej(self, joints, acc=0.1, vel=0.05, wait=True, relative=False, threshold=None):
         """
         move in joint space
         """
         if relative:
-            l = self.getj()
+            l = self.getj_position()
             joints = [v + l[i] for i, v in enumerate(joints)]
         prog = self._format_move("movej", joints, acc, vel)
         self.send_program(prog)
         if wait:
             self._wait_for_move(joints[:6], threshold=threshold, joints=True)
-            return self.getj()
+            return self.getj_position()
 
     def movel(self, tpose, acc=0.01, vel=0.01, wait=True, relative=False, threshold=None):
         """
@@ -357,13 +428,13 @@ class URRobot(object):
         Send a servoj command to the robot. See URScript documentation.
         """
         if relative:
-            l = self.getj()
+            l = self.getj_position()
             tjoints = [v + l[i] for i, v in enumerate(tjoints)]
         prog = self._format_servo("servoj", tjoints, acc=acc, vel=vel, t=t, lookahead_time=lookahead_time, gain=gain)
         self.send_program(prog)
         if wait:
             self._wait_for_move(tjoints[:6], threshold=threshold, joints=True)
-            return self.getj()
+            return self.getj_position()
 
     def _format_servo(self, command, tjoints, acc=0.01, vel=0.01, t=0.1, lookahead_time=0.2, gain=100, prefix=""):
         tjoints = [round(i, self.max_float_length) for i in tjoints]
@@ -387,15 +458,15 @@ class URRobot(object):
         sends whatever is defined in 'command' string
         """
         if relative:
-            l = self.getl()
+            l = self.getl_pose()
             tpose = [v + l[i] for i, v in enumerate(tpose)]
         prog = self._format_move(command, tpose, acc, vel, prefix="p")
         self.send_program(prog)
         if wait:
             self._wait_for_move(tpose[:6], threshold=threshold)
-            return self.getl()
+            return self.getl_pose()
 
-    def getl(self, wait=False, _log=True):
+    def getl_pose(self, wait=False, _log=True):
         """
         get TCP position
         """
@@ -405,6 +476,17 @@ class URRobot(object):
         if _log:
             self.logger.debug("Received pose from robot: %s", pose)
         return pose
+    
+    def getl_speed(self, wait=False, _log=True):
+        """
+        get TCP speed
+        """
+        speed = self.rtmon.getTCPSpeedActual(wait)
+        if speed:
+            speed = [speed[0], speed[1], speed[2], speed[3], speed[4], speed[5]]
+        if _log:
+            self.logger.debug("Received speed from robot: %s", speed)
+        return speed
 
     def movec(self, pose_via, pose_to, acc=0.01, vel=0.01, wait=True, threshold=None):
         """
@@ -417,7 +499,7 @@ class URRobot(object):
         self.send_program(prog)
         if wait:
             self._wait_for_move(pose_to, threshold=threshold)
-            return self.getl()
+            return self.getl_pose()
 
     def movejs(self, joint_positions_list, acc=0.01, vel=0.01, radius=0.01,
                wait=True, threshold=None):
@@ -492,7 +574,7 @@ class URRobot(object):
                 self._wait_for_move(target=pose_list[-1], threshold=threshold, joints=False)
             elif command == 'movej':
                 self._wait_for_move(target=pose_list[-1], threshold=threshold, joints=True)                
-            return self.getl()
+            return self.getl_pose()
 
     def stopl(self, acc=0.5):
         self.send_program("stopl(%s)" % acc)
@@ -547,7 +629,7 @@ class URRobot(object):
         """
         move tool in base coordinate, keeping orientation
         """
-        p = self.getl()
+        p = self.getl_pose()
         p[0] += vect[0]
         p[1] += vect[1]
         p[2] += vect[2]
@@ -557,7 +639,7 @@ class URRobot(object):
         """
         Move up in csys z
         """
-        p = self.getl()
+        p = self.getl_pose()
         p[2] += z
         self.movel(p, acc=acc, vel=vel)
 

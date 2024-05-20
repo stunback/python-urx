@@ -28,7 +28,7 @@ class Robot(URRobot):
         self.csys = m3d.Transform()
 
     def _get_lin_dist(self, target):
-        pose = URRobot.getl(self, wait=True)
+        pose = URRobot.getl_pose(self, wait=True)
         target = m3d.Transform(target)
         pose = m3d.Transform(pose)
         return pose.dist(target)
@@ -124,7 +124,7 @@ class Robot(URRobot):
         """
         get current transform from base to to tcp
         """
-        pose = URRobot.getl(self, wait, _log)
+        pose = URRobot.getl_pose(self, wait, _log)
         trans = self.csys.inverse * m3d.Transform(pose)
         if _log:
             self.logger.debug("Returning pose to user: %s", trans.pose_vector)
@@ -158,6 +158,21 @@ class Robot(URRobot):
         move at given joint velocities until minimum min_time seconds
         """
         return self.speedx("speedj", velocities, acc, min_time)
+    
+    def speedl_rt(self, velocities, acc, min_time):
+        """
+        move at given velocities using rtmon until minimum min_time seconds
+        """
+        v = self.csys.orient * m3d.Vector(velocities[:3])
+        w = self.csys.orient * m3d.Vector(velocities[3:])
+        vels = np.concatenate((v.array, w.array))
+        return self.speedx_rt("speedl", vels, acc, min_time)
+    
+    def speedj_rt(self, velocities, acc, min_time):
+        """
+        move at given joint velocities using rtmon until minimum min_time seconds
+        """
+        return self.speedx_rt("speedj", velocities, acc, min_time)
 
     def speedl_tool(self, velocities, acc, min_time):
         """
@@ -203,7 +218,7 @@ class Robot(URRobot):
         t = m3d.Transform(pose)
         self.add_pose_tool(t, acc, vel, wait=wait, command=command, threshold=threshold)
 
-    def getl(self, wait=False, _log=True):
+    def getl_pose(self, wait=False, _log=True):
         """
         return current transformation from tcp to current csys
         """
@@ -229,15 +244,15 @@ class Robot(URRobot):
         print("Set it as a new reference by calling myrobot.set_csys(new_csys)")
         input("Move to first point and click Enter")
         # we do not use get_pose so we avoid rounding values
-        pose = URRobot.getl(self)
+        pose = URRobot.getl_pose(self)
         print("Introduced point defining X: {}".format(pose[:3]))
         px = m3d.Vector(pose[:3])
         input("Move to second point and click Enter")
-        pose = URRobot.getl(self)
+        pose = URRobot.getl_pose(self)
         print("Introduced point defining Origo: {}".format(pose[:3]))
         p0 = m3d.Vector(pose[:3])
         input("Move to third point and click Enter")
-        pose = URRobot.getl(self)
+        pose = URRobot.getl_pose(self)
         print("Introduced point defining Y: {}".format(pose[:3]))
         py = m3d.Vector(pose[:3])
 

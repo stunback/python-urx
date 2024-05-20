@@ -12,13 +12,13 @@ if __name__ == "__main__":
         l = 0.05
         v = 0.05
         a = 0.3
-        j = rob.getj()
+        j = rob.getj_position()
         print("Initial joint configuration is ", j)
         t = rob.get_pose()
         print("Transformation from base to tcp is: ", t)
         print("Translating in x")
         rob.translate((l, 0, 0), acc=a, vel=v)
-        pose = rob.getl()
+        pose = rob.getl_pose()
         print("robot tcp is at: ", pose)
         print("moving in z")
         pose[2] += l

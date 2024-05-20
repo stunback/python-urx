@@ -35,7 +35,7 @@ if __name__ == "__main__":
         r = 0.01
         print("Digital out 0 and 1 are: ", rob.get_digital_out(0), rob.get_digital_out(1))
         print("Analog inputs are: ", rob.get_analog_inputs())
-        initj = rob.getj()
+        initj = rob.getj_position()
         print("Initial joint configuration is ", initj)
         t = rob.get_pose()
         print("Transformation from base to tcp is: ", t)
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         print("Translating in x")
         wait()
         rob.translate((l, 0, 0), acc=a, vel=v)
-        pose = rob.getl()
+        pose = rob.getl_pose()
         print("robot tcp is at: ", pose)
 
         print("moving in z")

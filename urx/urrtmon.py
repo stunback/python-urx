@@ -6,6 +6,7 @@ It is assumed that the motor currents, the last group of 48 bytes, are not send.
 Originally Written by Morten Lind
 Parsing for Firmware 5.9 is added by Byeongdu Lee
 '''
+from threading import Thread, Condition, Lock
 import logging
 import socket
 import struct
@@ -23,6 +24,39 @@ __credits__ = ["Morten Lind, Olivier Roulet-Dubonnet"]
 __license__ = "LGPLv3"
 
 
+def compare_version(current, required):
+    """Compare two firmware versions.
+    Return True if current is greater or equal to required.
+    """
+    current = current.split('.')
+    required = required.split('.')
+    for i in range(len(current)):
+        if int(current[i]) < int(required[i]):
+            return False
+    return True
+
+
+def check_version(current, required):
+    """Check if current firmware version is equal to required.
+    """
+    current = current.split('.')
+    required = required.split('.')
+    for i in range(len(current)):
+        if int(current[i]) != int(required[i]):
+            return False
+    return True
+
+
+class Program(object):
+    def __init__(self, prog):
+        self.program = prog
+        self.condition = Condition()
+
+    def __str__(self):
+        return "Program({})".format(self.program)
+    __repr__ = __str__
+
+
 class URRTMonitor(threading.Thread):
 
     # Struct for revision of the UR controller giving 692 bytes
@@ -33,7 +67,8 @@ class URRTMonitor(threading.Thread):
     rtstruct540 = struct.Struct('>d6d6d6d6d6d6d6d6d18d')
 
     rtstruct5_1 = struct.Struct('>d1d6d6d6d6d6d6d6d6d6d6d6d6d6d6d1d6d1d1d1d6d1d6d3d6d1d1d1d1d1d1d1d6d1d1d3d3d')
-    rtstruct5_9 = struct.Struct('>d6d6d6d6d6d6d6d6d6d6d6d6d6d6d1d6d1d1d1d6d1d6d3d6d1d1d1d1d1d1d1d6d1d1d3d3d1d')
+    rtstruct5_9 = struct.Struct('>d6d6d6d6d6d6d6d6d6d6d6d6d6d6d1d6d1d1d1d6d1d6d3d6d1d1d1d1d1d1d1d6d1d1d3d3d1d1d1d1d')
+    rtstruct5_10 = struct.Struct('>d6d6d6d6d6d6d6d6d6d6d6d6d6d6d1d6d1d1d1d6d1d6d3d6d1d1d1d1d1d1d1d6d1d1d3d3d1d1d1d1d1d3d6d')
 
     def __init__(self, urHost, urFirm=None):
         threading.Thread.__init__(self)
@@ -51,7 +86,7 @@ class URRTMonitor(threading.Thread):
         self._ctrlTimestamp = None
         self._qActual = None
         self._qTarget = None
-        self._tcp = None
+        self._tcp_pose_target = None
         self._tcp_force = None
         self._joint_temperature = None
         self._joint_voltage = None
@@ -64,8 +99,8 @@ class URRTMonitor(threading.Thread):
         self._iTarget = None
         self._mTarget = None
         self._qdActual = None
-        self._tcp_speed = None
-        self._tcp = None
+        self._tcp_speed_actual = None
+        self._tcp_pose_target = None
         self._robot_mode = None
         self._joint_modes = None
         self._digital_outputs = None
@@ -80,6 +115,8 @@ class URRTMonitor(threading.Thread):
         self._buffer = []
         self._csys = None
         self._csys_lock = threading.Lock()
+        self._prog_queue = []
+        self._prog_queue_lock = threading.Lock()
 
     def set_csys(self, csys):
         with self._csys_lock:
@@ -111,7 +148,7 @@ class URRTMonitor(threading.Thread):
                 return self._timestamp, self._qActual
             else:
                 return self._qActual
-    getActual = q_actual
+    getJointPositionActual = q_actual
 
     def qd_actual(self, wait=False, timestamp=False):
         """ Get the actual joint velocity vector."""
@@ -122,6 +159,7 @@ class URRTMonitor(threading.Thread):
                 return self._timestamp, self._qdActual
             else:
                 return self._qdActual
+    getJointVelocityActual = qd_actual
 
     def q_target(self, wait=False, timestamp=False):
         """ Get the target joint position vector."""
@@ -132,14 +170,25 @@ class URRTMonitor(threading.Thread):
                 return self._timestamp, self._qTarget
             else:
                 return self._qTarget
-    getTarget = q_target
+    getJointPositionTarget = q_target
+    
+    def qd_target(self, wait=False, timestamp=False):
+        """ Get the target joint velocity vector."""
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            if timestamp:
+                return self._timestamp, self._qdTarget
+            else:
+                return self._qdTarget
+    getJointVelocityTarget = qd_target
 
-    def tcf_pose(self, wait=False, timestamp=False, ctrlTimestamp=False):
+    def tcp_pose_actual(self, wait=False, timestamp=False, ctrlTimestamp=False):
         """ Return the tool pose values."""
         if wait:
             self.wait()
         with self._dataAccess:
-            tcf = self._tcp
+            tcf = self._tcp_pose_actual
             if ctrlTimestamp or timestamp:
                 ret = [tcf]
                 if timestamp:
@@ -149,7 +198,40 @@ class URRTMonitor(threading.Thread):
                 return ret
             else:
                 return tcf
-    getTCF = tcf_pose
+    getTCPPoseActual = tcp_pose_actual
+    
+    def tcp_speed_actual(self, wait=False, timestamp=False):
+        """ Get the actual tcp speed vector."""
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            if timestamp:
+                return self._timestamp, self._tcp_speed_actual
+            else:
+                return self._tcp_speed_actual
+    getTCPSpeedActual = tcp_speed_actual
+    
+    def tcp_pose_target(self, wait=False, timestamp=False):
+        """ Get the target tcp pose vector."""
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            if timestamp:
+                return self._timestamp, self._tcp_pose_target
+            else:
+                return self._tcp_pose_target
+    getTCPPoseTarget = tcp_pose_target
+
+    def tcp_speed_target(self, wait=False, timestamp=False):
+        """ Get the target tcp speed vector."""
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            if timestamp:
+                return self._timestamp, self._tcp_speed_target
+            else:
+                return self._tcp_speed_target
+    getTCPSpeedTarget = tcp_speed_target
 
     def tcf_force(self, wait=False, timestamp=False):
         """ Get the tool force. The returned tool force is a
@@ -236,6 +318,30 @@ class URRTMonitor(threading.Thread):
             else:
                 return robot_current
     getROBOTCurrent = robot_current
+    
+    def program_state(self, wait=False, timestamp=False):
+        """ Get the program state."""
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            program_state = self._program_state
+            if timestamp:
+                return self._timestamp, program_state
+            else:
+                return program_state
+    getProgramState = program_state
+    
+    def robot_mode(self, wait=False, timestamp=False):
+        """ Get the robot mode."""
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            robot_mode = self._robot_mode
+            if timestamp:
+                return self._timestamp, robot_mode
+            else:
+                return robot_mode
+    getRobotMode = robot_mode
 
     def __recv_rt_data(self):
         head = self.__recv_bytes(4)
@@ -247,10 +353,12 @@ class URRTMonitor(threading.Thread):
             pkgsize)
         payload = self.__recv_bytes(pkgsize - 4)
         if self.urFirm is not None:
-            if self.urFirm == 5.1:
+            if check_version(self.urFirm, '5.1'): # self.urFirm == 5.1:
                 unp = self.rtstruct5_1.unpack(payload[:self.rtstruct5_1.size])
-            if self.urFirm == 5.9:
+            if check_version(self.urFirm, '5.9'): # self.urFirm == 5.9:
                 unp = self.rtstruct5_9.unpack(payload[:self.rtstruct5_9.size])
+            if compare_version(self.urFirm, '5.10'):
+                unp = self.rtstruct5_10.unpack(payload[:self.rtstruct5_10.size])
         else:
             if pkgsize >= 692:
                 unp = self.rtstruct692.unpack(payload[:self.rtstruct692.size])
@@ -280,22 +388,25 @@ class URRTMonitor(threading.Thread):
             self._qActual = np.array(unp[31:37])
             self._qdActual = np.array(unp[37:43])
             self._qTarget = np.array(unp[1:7])
+            self._qdTarget = np.array(unp[7:13])
             self._tcp_force = np.array(unp[67:73])
-            self._tcp = np.array(unp[73:79])            
+            self._tcp_pose_target = np.array(unp[73:79])            
+            self._tcp_speed_target = np.array(unp[79:85])
             self._joint_current = np.array(unp[43:49])
-            if self.urFirm >= 3.1:
+            if compare_version(self.urFirm, '3.1'): # self.urFirm >= 3.1:
                 self._joint_temperature = np.array(unp[86:92])
                 self._joint_voltage = np.array(unp[124:130])
                 self._main_voltage = unp[121]
                 self._robot_voltage = unp[122]
                 self._robot_current = unp[123]
 
-            if self.urFirm>= 5.9:
+            if compare_version(self.urFirm, '5.9'): # self.urFirm>= 5.9:
                 self._qdTarget = np.array(unp[7:13])
                 self._qddTarget = np.array(unp[13:19])
                 self._iTarget = np.array(unp[19:25])
                 self._mTarget = np.array(unp[25:31])
-                self._tcp_speed = np.array(unp[61:67])
+                self._tcp_pose_actual = np.array(unp[55:61])
+                self._tcp_speed_actual = np.array(unp[61:67])
                 self._joint_current = np.array(unp[49:55])
                 self._joint_voltage = np.array(unp[124:130])
                 self._robot_mode = unp[94]
@@ -307,18 +418,42 @@ class URRTMonitor(threading.Thread):
             if self._csys:
                 with self._csys_lock:
                     # might be a godd idea to remove dependancy on m3d
-                    tcp = self._csys.inverse * m3d.Transform(self._tcp)
-                self._tcp = tcp.pose_vector
+                    tcp = self._csys.inverse * m3d.Transform(self._tcp_pose_target)
+                self._tcp_pose_target = tcp.pose_vector
         if self._buffering:
             with self._buffer_lock:
                 self._buffer.append(
                     (self._timestamp,
                      self._ctrlTimestamp,
-                     self._tcp,
+                     self._tcp_pose_target,
                      self._qActual))  # FIXME use named arrays of allow to configure what data to buffer
 
         with self._dataEvent:
             self._dataEvent.notifyAll()
+    
+    def __send_rt_data(self):
+        with self._prog_queue_lock:
+            while len(self._prog_queue) > 0:
+                data = self._prog_queue.pop()
+                self._rtSock.send(data.program)
+                with data.condition:
+                    data.condition.notify_all()
+
+    def send_program(self, prog):
+        """
+        send program to robot in URRobot format
+        If another program is send while a program is running the first program is aborded.
+        """
+        prog.strip()
+        if not isinstance(prog, bytes):
+            prog = prog.encode()
+        
+        data = Program(prog + b"\n")
+        with data.condition:
+            with self._prog_queue_lock:
+                self._prog_queue.append(data)
+            data.condition.wait()
+            self.logger.debug("program sendt: %s", data)
 
     def start_buffering(self):
         """
@@ -371,9 +506,9 @@ class URRTMonitor(threading.Thread):
                 qTarget=self._qTarget,
                 qdActual=self._qdActual,
                 qdTarget=self._qdTarget,
-                tcp=self._tcp,
+                tcp=self._tcp_pose_target,
                 tcp_force=self._tcp_force,
-                tcp_speed=self._tcp_speed,
+                tcp_speed=self._tcp_speed_actual,
                 joint_temperature=self._joint_temperature,
                 joint_voltage=self._joint_voltage,
                 joint_current=self._joint_current,
@@ -400,4 +535,11 @@ class URRTMonitor(threading.Thread):
         self._rtSock.connect((self._urHost, 30003))
         while not self._stop_event:
             self.__recv_rt_data()
+            self.__send_rt_data()
         self._rtSock.close()
+
+    def is_program_running(self, wait=False):
+        if wait:
+            self.wait()
+        with self._dataAccess:
+            return self._program_state == 1
